@@ -25,14 +25,12 @@ import (
 	"strings"
 	"time"
 
-	"google3/base/go/flag"
-
-	glog "google3/base/go/log"
-	md "google3/third_party/cloudprober/common/metadata/metadata"
-	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
-	"google3/third_party/golang/cloud_google_com/go/logging/v/v1/logging"
-	"google3/third_party/golang/google_api/option/option"
-	"google3/third_party/golang/oauth2/google/google"
+	"cloud.google.com/go/compute/metadata"
+	"cloud.google.com/go/logging"
+	"flag"
+	"github.com/golang/glog"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/option"
 )
 
 var (
@@ -108,9 +106,9 @@ func enableDebugLog(debugLog bool, debugLogRe string, logName string) bool {
 //
 // It falls back to logging through the traditional logger if:
 //
-//   - Not running on GCE,
-//   - Logging client is uninitialized (e.g. for testing),
-//   - Logging to cloud fails for some reason.
+//   * Not running on GCE,
+//   * Logging client is uninitialized (e.g. for testing),
+//   * Logging to cloud fails for some reason.
 //
 // Logger{} is a valid object that will log through the traditional logger.
 //
@@ -134,6 +132,7 @@ type Logger struct {
 // context.Background and attaches cloudprober prefix to log names.
 func NewCloudproberLog(component string) (*Logger, error) {
 	cpPrefix := cloudproberPrefix
+
 	envLogPrefix := os.Getenv(LogPrefixEnvVar)
 	if envLogPrefix != "" {
 		cpPrefix = envLogPrefix
@@ -147,7 +146,13 @@ func New(ctx context.Context, logName string) (*Logger, error) {
 	return NewCloudLoggerWithLabels(ctx, logName, make(map[string]string))
 }
 
-// NewCloudLoggerWithLabels returns a new Logger object with a cloud logging client initialized with custom labels if running on GCE.
+// New returns a new Logger object with cloud logging client initialized if running on GCE.
+func New(ctx context.Context, logName string) (*Logger, error) {
+	return NewCloudLoggerWithLabels(ctx, logName, make(map[string]string))
+}
+
+// NewCloudLoggerWithLabels returns a new Logger object with a cloud logging
+// client initialized with custom labels if running on GCE.
 func NewCloudLoggerWithLabels(ctx context.Context, logName string, labels map[string]string) (*Logger, error) {
 	if labels == nil {
 		labels = make(map[string]string)
