@@ -25,12 +25,14 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/compute/metadata"
-	"cloud.google.com/go/logging"
-	"flag"
-	"github.com/golang/glog"
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/option"
+	"google3/base/go/flag"
+
+	glog "google3/base/go/log"
+	md "google3/third_party/cloudprober/common/metadata/metadata"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
+	"google3/third_party/golang/cloud_google_com/go/logging/v/v1/logging"
+	"google3/third_party/golang/google_api/option/option"
+	"google3/third_party/golang/oauth2/google/google"
 )
 
 var (
@@ -106,18 +108,22 @@ func enableDebugLog(debugLog bool, debugLogRe string, logName string) bool {
 //
 // It falls back to logging through the traditional logger if:
 //
-//   * Not running on GCE,
-//   * Logging client is uninitialized (e.g. for testing),
-//   * Logging to cloud fails for some reason.
+//   - Not running on GCE,
+//   - Logging client is uninitialized (e.g. for testing),
+//   - Logging to cloud fails for some reason.
 //
 // Logger{} is a valid object that will log through the traditional logger.
 //
+// labels is a map which is present in every log entry and all custom
+// metadata about the log entries can be inserted into this map.
+// For example probe id can be inserted into this map.
 type Logger struct {
 	name                string
 	logc                *logging.Client
 	logger              *logging.Logger
 	debugLog            bool
 	disableCloudLogging bool
+	labels              map[string]string
 	// TODO(manugarg): Logger should eventually embed the probe id and each probe
 	// should get a different Logger object (embedding that probe's probe id) but
 	// sharing the same logging client. We could then make probe id one of the
@@ -128,7 +134,6 @@ type Logger struct {
 // context.Background and attaches cloudprober prefix to log names.
 func NewCloudproberLog(component string) (*Logger, error) {
 	cpPrefix := cloudproberPrefix
-
 	envLogPrefix := os.Getenv(LogPrefixEnvVar)
 	if envLogPrefix != "" {
 		cpPrefix = envLogPrefix
@@ -139,17 +144,24 @@ func NewCloudproberLog(component string) (*Logger, error) {
 
 // New returns a new Logger object with cloud logging client initialized if running on GCE.
 func New(ctx context.Context, logName string) (*Logger, error) {
+	return NewCloudLoggerWithLabels(ctx, logName, make(map[string]string))
+}
+
+// NewCloudLoggerWithLabels returns a new Logger object with a cloud logging client initialized with custom labels if running on GCE.
+func NewCloudLoggerWithLabels(ctx context.Context, logName string, labels map[string]string) (*Logger, error) {
+	if labels == nil {
+		labels = make(map[string]string)
+	}
 	l := &Logger{
 		name:                logName,
+		labels:              labels,
 		debugLog:            enableDebugLog(*debugLog, *debugLogList, logName),
 		disableCloudLogging: *disableCloudLogging,
 	}
-
 	if !metadata.OnGCE() || l.disableCloudLogging {
 		return l, nil
 	}
-
-	l.Infof("Running on GCE. Logs for %s will go to Cloud (Stackdriver).", logName)
+	l.Infof("Running on GCE. Logs for %s will go to Cloud (Stackdriver).", l.name)
 	if err := l.EnableStackdriverLogging(ctx); err != nil {
 		return nil, err
 	}
@@ -185,6 +197,16 @@ func (l *Logger) EnableStackdriverLogging(ctx context.Context) error {
 		return err
 	}
 
+	// Add instance_name to common labels if available.
+	if !md.IsKubernetes() {
+		instanceName, err := metadata.InstanceName()
+		if err != nil {
+			l.Infof("Error getting instance name on GCE: %v", err)
+		} else {
+			l.labels["instance_name"] = instanceName
+		}
+	}
+
 	loggerOpts := []logging.LoggerOption{
 		// Encourage batching of write requests.
 		// Flush logs to remote logging after 1000 entries (default is 10).
@@ -194,14 +216,8 @@ func (l *Logger) EnableStackdriverLogging(ctx context.Context) error {
 		// We want flushing to be mostly driven by the buffer size (configured
 		// above), rather than time.
 		logging.DelayThreshold(10 * time.Second),
-	}
-
-	// Add instance_name to common labels if available.
-	instanceName, err := metadata.InstanceName()
-	if err != nil {
-		l.Infof("Error getting instance name on GCE. Possibly running on GKE: %v", err)
-	} else {
-		loggerOpts = append(loggerOpts, logging.CommonLabels(map[string]string{"instance_name": instanceName}))
+		// Common labels that will be present in all log entries.
+		logging.CommonLabels(l.labels),
 	}
 
 	l.logger = l.logc.Logger(logName, loggerOpts...)
